@@ -1,0 +1,53 @@
+services:
+  signaling:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.signaling
+    ports:
+      - "3000:3000"
+      - "3443:3443" # expose HTTPS port when enabled
+    environment:
+      - NODE_ENV=production
+      - ENABLE_HTTPS=1 # set to 0 to disable; requires certs mounted
+      - HTTPS_PORT=3443
+    volumes:
+      - ./certs:/app/certs:ro # place server.key and server.crt here
+    networks:
+      - webrtc-network
+
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    environment:
+      - MODE=${MODE:-server}
+      - GPU_ENABLED=${GPU_ENABLED:-false}
+    volumes:
+      - ./models:/app/models
+    networks:
+      - webrtc-network
+    profiles:
+      - server
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+      - "3000:3000"
+      - "8002:8002"
+    environment:
+      - MODE=${MODE:-wasm}
+    volumes:
+      - ./models:/app/models
+    networks:
+      - webrtc-network
+    profiles:
+      - wasm
+
+networks:
+  webrtc-network:
+    driver: bridge

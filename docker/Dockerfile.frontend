@@ -1,0 +1,26 @@
+# Frontend Mode Dockerfile (WASM inference)
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY frontend/package*.json ./
+
+# Install dependencies
+RUN if [ -f package-lock.json ]; then \
+      npm ci; \
+    else \
+      npm install --no-audit --no-fund; \
+    fi
+
+# Copy frontend code
+COPY frontend/ .
+COPY models/ ./public/models/
+
+# For WASM mode, we serve static files directly - no webpack build needed
+
+# Expose port
+EXPOSE 3000 8002
+
+# Start frontend server
+CMD ["npm", "start"]

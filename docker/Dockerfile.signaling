@@ -1,0 +1,26 @@
+# Signaling Server Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY frontend/package*.json ./
+
+# Install dependencies
+RUN if [ -f package-lock.json ]; then \
+      npm ci --omit=dev; \
+    else \
+      npm install --no-audit --no-fund --production; \
+    fi
+
+# Copy signaling server code and static files
+COPY frontend/src/server.js ./src/
+COPY frontend/src/shared ./src/shared
+COPY frontend/public ./public
+COPY models/ ./public/models/
+
+# Expose port
+EXPOSE 3000
+
+# Start signaling server
+CMD ["node", "src/server.js"]

@@ -1,0 +1,37 @@
+{
+  "name": "webrtc-vlm-frontend",
+  "version": "1.0.0",
+  "description": "WebRTC VLM Detection Frontend with WASM inference",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "build": "webpack --mode production",
+    "build:dev": "webpack --mode development"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "cors": "^2.8.5",
+    "simple-peer": "^9.11.1",
+    "qrcode": "^1.5.3",
+    "onnxruntime-web": "^1.16.0",
+    "@tensorflow/tfjs": "^4.10.0",
+    "@tensorflow/tfjs-backend-wasm": "^4.10.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1",
+    "webpack": "^5.88.2",
+    "webpack-cli": "^5.1.4",
+    "copy-webpack-plugin": "^11.0.0",
+    "html-webpack-plugin": "^5.5.3"
+  },
+  "keywords": [
+    "webrtc",
+    "object-detection",
+    "wasm",
+    "real-time"
+  ],
+  "author": "GitHub Copilot Demo",
+  "license": "MIT"
+}

@@ -5,15 +5,20 @@ services:
       dockerfile: docker/Dockerfile.signaling
     ports:
       - "3000:3000"
-      - "3443:3443" # expose HTTPS port when enabled
+      - "3443:3443" # optional HTTPS
     environment:
       - NODE_ENV=production
-      - ENABLE_HTTPS=1 # set to 0 to disable; requires certs mounted
+      - ENABLE_HTTPS=${ENABLE_HTTPS:-0}
       - HTTPS_PORT=3443
+      - MODE=${MODE:-wasm}
     volumes:
-      - ./certs:/app/certs:ro # place server.key and server.crt here
+      - ./certs:/app/certs:ro
+      - ./models:/app/models:ro
     networks:
       - webrtc-network
+    profiles:
+      - wasm
+      - server
 
   server:
     build:
@@ -37,7 +42,6 @@ services:
       context: .
       dockerfile: docker/Dockerfile.frontend
     ports:
-      - "3000:3000"
       - "8002:8002"
     environment:
       - MODE=${MODE:-wasm}
@@ -46,7 +50,7 @@ services:
     networks:
       - webrtc-network
     profiles:
-      - wasm
+      - legacy
 
 networks:
   webrtc-network:

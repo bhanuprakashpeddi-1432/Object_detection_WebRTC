@@ -1,33 +1,30 @@
 @echo off
 REM Download pre-trained models for WebRTC VLM Detection (Windows version)
 
-echo 📦 Downloading pre-trained models...
+echo 📦 Downloading pre-trained models for WebRTC Object Detection...
 
 set MODELS_DIR=models
 if not exist "%MODELS_DIR%" mkdir "%MODELS_DIR%"
 
-REM Download YOLOv5n model
-set MODEL_FILE=%MODELS_DIR%\yolov5n.onnx
+REM Download YOLOv4 ONNX model
+set MODEL_FILE=%MODELS_DIR%\yolov4.onnx
 if not exist "%MODEL_FILE%" (
-    echo ⬇️  Downloading YOLOv5n model...
-    powershell -Command "& {Invoke-WebRequest -Uri 'https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5n.onnx' -OutFile '%MODEL_FILE%'}"
+    echo ⬇️  Downloading YOLOv4 ONNX model (~245MB)...
+    echo 💡 This may take a few minutes depending on your internet connection
+    powershell -Command "& {Invoke-WebRequest -Uri 'https://github.com/onnx/models/raw/main/vision/object_detection_segmentation/yolov4/model/yolov4.onnx' -OutFile '%MODEL_FILE%'}"
     if errorlevel 1 (
-        echo ❌ Failed to download model
-        exit /b 1
+        echo ❌ Failed to download YOLOv4 model
+        echo 💡 Trying alternative download...
+        powershell -Command "& {Invoke-WebRequest -Uri 'https://media.githubusercontent.com/media/onnx/models/main/vision/object_detection_segmentation/yolov4/model/yolov4.onnx' -OutFile '%MODEL_FILE%'}"
+        if errorlevel 1 (
+            echo ❌ All download attempts failed
+            echo � Please manually download from: https://github.com/onnx/models/tree/main/vision/object_detection_segmentation/yolov4
+            exit /b 1
+        )
     )
-    echo ✅ YOLOv5n model downloaded
+    echo ✅ YOLOv4 model downloaded successfully
 ) else (
-    echo ✅ YOLOv5n model already exists
-)
-
-REM Create quantized version (copy for demo)
-set QUANTIZED_MODEL=%MODELS_DIR%\yolov5n-int8.onnx
-if not exist "%QUANTIZED_MODEL%" (
-    echo 📋 Creating quantized model for WASM mode...
-    copy "%MODEL_FILE%" "%QUANTIZED_MODEL%"
-    echo 💡 Note: Using standard model as quantized version for demo
-) else (
-    echo ✅ Quantized model already exists
+    echo ✅ YOLOv4 model already exists
 )
 
 REM Create COCO class labels

@@ -1,14 +1,14 @@
 #!/bin/bash
 
-# Download pre-trained models for WebRTC VLM Detection
-# This script downloads YOLOv5 models in ONNX format
+# Download pre-trained models for WebRTC Object Detection
+# This script downloads YOLOv4 ONNX model for object detection
 
 set -e
 
 MODELS_DIR="./models"
 TEMP_DIR="/tmp/vlm_models"
 
-echo "📦 Downloading pre-trained models..."
+echo "📦 Downloading pre-trained models for WebRTC Object Detection..."
 
 # Create directories
 mkdir -p "$MODELS_DIR"
@@ -18,6 +18,41 @@ mkdir -p "$TEMP_DIR"
 download_file() {
     local url=$1
     local output=$2
+    local description=$3
+    
+    echo "⬇️  Downloading $description..."
+    
+    if command -v wget &> /dev/null; then
+        wget --progress=bar:force:noscroll -O "$output" "$url"
+    elif command -v curl &> /dev/null; then
+        curl -L --progress-bar -o "$output" "$url"
+    else
+        echo "❌ Neither wget nor curl found. Please install one of them."
+        exit 1
+    fi
+}
+
+# Download YOLOv4 ONNX model
+MODEL_FILE="$MODELS_DIR/yolov4.onnx"
+if [ ! -f "$MODEL_FILE" ]; then
+    echo "💡 Downloading YOLOv4 ONNX model (~245MB)"
+    echo "💡 This may take a few minutes depending on your internet connection"
+    
+    # Try primary URL
+    if ! download_file "https://github.com/onnx/models/raw/main/vision/object_detection_segmentation/yolov4/model/yolov4.onnx" "$MODEL_FILE" "YOLOv4 model"; then
+        echo "⚠️  Primary download failed, trying alternative..."
+        # Try alternative URL
+        if ! download_file "https://media.githubusercontent.com/media/onnx/models/main/vision/object_detection_segmentation/yolov4/model/yolov4.onnx" "$MODEL_FILE" "YOLOv4 model (alternative)"; then
+            echo "❌ All download attempts failed"
+            echo "📖 Please manually download from: https://github.com/onnx/models/tree/main/vision/object_detection_segmentation/yolov4"
+            exit 1
+        fi
+    fi
+    
+    echo "✅ YOLOv4 model downloaded successfully"
+else
+    echo "✅ YOLOv4 model already exists"
+fi
     local description=$3
     
     echo "⬇️  Downloading $description..."

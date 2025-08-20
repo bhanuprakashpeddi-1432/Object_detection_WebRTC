@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>📱 Phone Camera - WebRTC VLM Detection</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #000;
+            color: #fff;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        .phone-container {
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            position: relative;
+        }
+        
+        .status-bar {
+            background: rgba(0,0,0,0.8);
+            padding: 10px 20px;
+            text-align: center;
+            z-index: 100;
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        .status.disconnected {
+            background: #ff4757;
+        }
+        
+        .status.connecting {
+            background: #ffa502;
+        }
+        
+        .status.connected {
+            background: #2ed573;
+        }
+        
+        .camera-container {
+            flex: 1;
+            position: relative;
+            background: #000;
+        }
+
+        .debug-overlay {
+            position: absolute;
+            top: 90px;
+            left: 10px;
+            right: 10px;
+            background: rgba(30,30,30,0.6);
+            color: #0ff;
+            font-size: 11px;
+            line-height: 1.3;
+            padding: 6px 8px;
+            border-radius: 6px;
+            max-height: 120px;
+            overflow: auto;
+            z-index: 120;
+            font-family: monospace;
+            display: none;
+        }
+        
+        #localVideo {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .controls {
+            background: rgba(0,0,0,0.8);
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 150; /* ensure above video */
+        }
+        
+        .btn {
+            padding: 15px 25px;
+            border: none;
+            border-radius: 25px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            min-width: 120px;
+        }
+        
+        .btn-start {
+            background: #2ed573;
+            color: white;
+        }
+        
+        .btn-stop {
+            background: #ff4757;
+            color: white;
+        }
+        
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+        
+        .info {
+            background: rgba(0,0,0,0.8);
+            padding: 15px 20px;
+            position: absolute;
+            top: 60px;
+            left: 20px;
+            right: 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            text-align: center;
+        }
+        
+        .error {
+            background: rgba(255, 71, 87, 0.9);
+            color: white;
+            padding: 15px 20px;
+            position: absolute;
+            top: 60px;
+            left: 20px;
+            right: 20px;
+            border-radius: 10px;
+            font-size: 14px;
+            text-align: center;
+            z-index: 200;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        @media (orientation: landscape) {
+            .controls {
+                flex-direction: row;
+                right: 20px;
+                bottom: 20px;
+                left: auto;
+                background: rgba(0,0,0,0.6);
+                border-radius: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="phone-container">
+        <div class="status-bar">
+            <div class="status disconnected" id="connectionStatus">📱 Phone Camera</div>
+        </div>
+        
+        <div class="camera-container">
+            <video id="localVideo" autoplay playsinline muted></video>
+            <div id="debugLog" class="debug-overlay"></div>
+        </div>
+        
+        <div class="info" id="infoPanel">
+            <strong>📷 Camera Setup</strong><br>
+            Tap "Start Camera" to begin streaming to the viewer
+        </div>
+        
+        <div class="error hidden" id="errorPanel"></div>
+        
+        <div class="controls">
+            <button class="btn btn-start" id="startBtn">Start Camera</button>
+            <button class="btn btn-stop" id="stopBtn" disabled>Stop Camera</button>
+            <button class="btn btn-start" id="diagBtn" style="background:#1e90ff">Diagnostics</button>
+        </div>
+    </div>
+    
+    <script src="/socket.io/socket.io.js"></script>
+    <!-- WebRTC adapter for broader mobile compatibility -->
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script>
+        class PhoneApp {
+            constructor() {
+                this.socket = null;
+                this.peerConnection = null;
+                this.localStream = null;
+                this.isStreaming = false;
+                this.verifiedMediaSupport = false;
+                
+                this.elements = {
+                    localVideo: document.getElementById('localVideo'),
+                    connectionStatus: document.getElementById('connectionStatus'),
+                    startBtn: document.getElementById('startBtn'),
+                    stopBtn: document.getElementById('stopBtn'),
+                    diagBtn: document.getElementById('diagBtn'),
+                    infoPanel: document.getElementById('infoPanel'),
+                    errorPanel: document.getElementById('errorPanel'),
+                    debugLog: document.getElementById('debugLog')
+                };
+                
+                this.rtcConfig = {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' }
+                    ]
+                };
+                
+                this.init();
+            }
+            
+            init() {
+                this.setupUI();
+                this.connectToSignaling();
+            }
+            
+            setupUI() {
+                this.elements.startBtn.addEventListener('click', () => this.startCamera());
+                this.elements.stopBtn.addEventListener('click', () => this.stopCamera());
+                this.elements.diagBtn.addEventListener('click', () => this.runDiagnostics());
+                // Long-press (2s) anywhere to toggle debug overlay
+                let pressTimer = null;
+                document.body.addEventListener('touchstart', () => {
+                    pressTimer = setTimeout(() => this.toggleDebug(), 1800);
+                });
+                document.body.addEventListener('touchend', () => {
+                    if (pressTimer) clearTimeout(pressTimer);
+                });
+                this.logDebug('UI initialized');
+                
+                // Prevent screen from sleeping
+                if ('wakeLock' in navigator) {
+                    navigator.wakeLock.request('screen').catch(e => {
+                        console.log('Wake lock failed:', e);
+                    });
+                }
+            }
+
+            runDiagnostics() {
+                const ua = navigator.userAgent;
+                const secure = window.isSecureContext;
+                const hasMedia = !!(navigator.mediaDevices);
+                const hasGUM = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+                const legacy = !!(navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia);
+                const lines = [
+                    '🔎 Diagnostics:',
+                    `User-Agent: ${ua}`,
+                    `Secure Context: ${secure}`,
+                    `navigator.mediaDevices: ${hasMedia}`,
+                    `mediaDevices.getUserMedia: ${hasGUM}`,
+                    `Legacy getUserMedia present: ${legacy}`,
+                    `Adapter.js loaded: ${typeof window.adapter !== 'undefined'}`
+                ];
+                if (!secure) lines.push('⚠ Not a secure context (required on many mobile browsers).');
+                if (!hasGUM) lines.push('❌ getUserMedia unavailable after polyfill attempt. Try updating browser or using Chrome/Safari.');
+                this.updateInfo(lines.join('<br>'));
+            }
+            
+            connectToSignaling() {
+                this.socket = io();
+                
+                this.socket.on('connect', () => {
+                    console.log('Connected to signaling server');
+                    this.updateStatus('connecting', '🔗 Connecting...');
+                    this.socket.emit('join-room', { roomId: 'detection-room', role: 'phone' });
+                });
+                
+                this.socket.on('disconnect', () => {
+                    console.log('Disconnected from signaling server');
+                    this.updateStatus('disconnected', '❌ Disconnected');
+                });
+                
+                this.socket.on('peer-joined', (data) => {
+                    console.log(`Peer joined: ${data.peerId} (${data.role})`);
+                    if (data.role === 'viewer') {
+                        this.viewerPeerId = data.peerId; // store for targeted signaling
+                        this.updateInfo('🖥️ Viewer connected! Start your camera to begin streaming.');
+                    }
+                });
+
+                // Receive existing peers list to capture already-present viewer
+                this.socket.on('existing-peers', (peers) => {
+                    const viewer = peers.find(p => p.role === 'viewer');
+                    if (viewer) {
+                        this.viewerPeerId = viewer.peerId;
+                        this.logDebug('Found existing viewer peer: ' + this.viewerPeerId);
+                    }
+                });
+                
+                this.socket.on('signal', async (data) => {
+                    const { fromPeer, signal } = data;
+                    
+                    if (!this.peerConnection) {
+                        this.createPeerConnection();
+                    }
+                    
+                    if (signal.type === 'offer') {
+                        await this.handleOffer(signal);
+                    }
+                });
+                
+                this.socket.on('ice-candidate', async (data) => {
+                    const { fromPeer, candidate } = data;
+                    if (this.peerConnection && candidate) {
+                        try {
+                            await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+                        } catch (error) {
+                            console.error('Error adding ICE candidate:', error);
+                        }
+                    }
+                });
+            }
+            
+            createPeerConnection() {
+                this.peerConnection = new RTCPeerConnection(this.rtcConfig);
+                
+                this.peerConnection.onicecandidate = (event) => {
+                    if (event.candidate && this.viewerPeerId) {
+                        this.socket.emit('ice-candidate', {
+                            targetPeer: this.viewerPeerId,
+                            candidate: event.candidate
+                        });
+                    } else if (event.candidate) {
+                        this.logDebug('ICE candidate ready but viewerPeerId not set yet');
+                    }
+                };
+                
+                this.peerConnection.onconnectionstatechange = () => {
+                    const state = this.peerConnection.connectionState;
+                    console.log('Connection state:', state);
+                    
+                    switch (state) {
+                        case 'connected':
+                            this.updateStatus('connected', '✅ Streaming');
+                            this.updateInfo('📹 Camera is streaming to viewer! Point camera at objects to detect.');
+                            break;
+                        case 'disconnected':
+                        case 'failed':
+                            this.updateStatus('disconnected', '❌ Connection Lost');
+                            this.updateInfo('🔄 Connection lost. Viewer may have disconnected.');
+                            break;
+                    }
+                };
+                
+                // Add local stream if available
+                if (this.localStream) {
+                    this.localStream.getTracks().forEach(track => {
+                        this.peerConnection.addTrack(track, this.localStream);
+                    });
+                }
+            }
+            
+            async handleOffer(offer) {
+                try {
+                    await this.peerConnection.setRemoteDescription(offer);
+                    
+                    const answer = await this.peerConnection.createAnswer();
+                    await this.peerConnection.setLocalDescription(answer);
+                    
+                    this.socket.emit('signal', {
+                        targetPeer: this.viewerPeerId || 'broadcast',
+                        signal: answer
+                    });
+                } catch (error) {
+                    console.error('Error handling offer:', error);
+                    this.showError('Failed to establish connection');
+                }
+            }
+            
+            async startCamera() {
+                this.elements.startBtn.disabled = true;
+                this.hideError();
+                this.logDebug('Start camera requested');
+
+                // Basic capability / context checks
+                if (!window.isSecureContext && location.hostname !== 'localhost' && !/^127\./.test(location.hostname)) {
+                    this.showError('Browser blocked camera on insecure connection. Use HTTPS, localhost, or a tunneling service (ngrok).');
+                    this.elements.startBtn.disabled = false;
+                    return;
+                }
+
+                // Polyfill for older mobile browsers
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    const legacyGetUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+                    if (legacyGetUserMedia) {
+                        navigator.mediaDevices = navigator.mediaDevices || {};
+                        navigator.mediaDevices.getUserMedia = (constraints) => new Promise((resolve, reject) => legacyGetUserMedia.call(navigator, constraints, resolve, reject));
+                    }
+                }
+
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    this.showError('Camera API (getUserMedia) not available. Update your browser or use Chrome/Safari latest.');
+                    this.elements.startBtn.disabled = false;
+                    return;
+                }
+
+                try {
+                    this.updateInfo('📷 Requesting camera permission...');
+                    const constraints = {
+                        video: {
+                            width: { ideal: 640, max: 1280 },
+                            height: { ideal: 480, max: 720 },
+                            frameRate: { ideal: 20, max: 30 },
+                            facingMode: { ideal: 'environment' }
+                        },
+                        audio: false
+                    };
+
+                    // First attempt
+                    this.logDebug('Requesting gUM with constraints: ' + JSON.stringify(constraints));
+                    this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                    this.logDebug('Primary constraints success');
+
+                } catch (err) {
+                    console.warn('Primary constraints failed, retrying with basic video=true. Reason:', err);
+                    try {
+                        this.logDebug('Primary failed, trying basic video:true');
+                        this.localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                        this.logDebug('Basic constraints success');
+                    } catch (err2) {
+                        console.error('All camera attempts failed:', err2);
+                        let reason = err2.message || 'Unknown error';
+                        if (err2.name === 'NotAllowedError') reason = 'Permission denied. Allow camera access in browser settings.';
+                        if (err2.name === 'NotFoundError') reason = 'No camera found. Ensure camera is available / not in use.';
+                        if (err2.name === 'NotReadableError') reason = 'Camera busy or hardware error. Close other apps using the camera.';
+                        this.showError('Failed to access camera: ' + reason);
+                        this.elements.startBtn.disabled = false;
+                        return;
+                    }
+                }
+
+                // Display local video
+                this.elements.localVideo.setAttribute('playsinline', 'true');
+                this.elements.localVideo.setAttribute('webkit-playsinline', 'true');
+                this.elements.localVideo.srcObject = this.localStream;
+
+                // Ensure peer connection exists for track addition when viewer arrives
+                if (!this.peerConnection) {
+                    this.createPeerConnection();
+                }
+                this.localStream.getTracks().forEach(track => {
+                    try { this.peerConnection.addTrack(track, this.localStream); this.logDebug('Track added: ' + track.kind); } catch(e) { this.logDebug('Track add error: ' + e.message); }
+                });
+
+                this.isStreaming = true;
+                this.elements.stopBtn.disabled = false;
+                this.updateInfo('📹 Camera ready! Waiting for viewer connection...');
+                this.logDebug('Camera ready; waiting for viewer');
+            }
+            
+            stopCamera() {
+                if (this.localStream) {
+                    this.localStream.getTracks().forEach(track => track.stop());
+                    this.localStream = null;
+                    this.elements.localVideo.srcObject = null;
+                }
+                
+                if (this.peerConnection) {
+                    this.peerConnection.close();
+                    this.peerConnection = null;
+                }
+                
+                this.isStreaming = false;
+                this.elements.startBtn.disabled = false;
+                this.elements.stopBtn.disabled = true;
+                
+                this.updateStatus('disconnected', '📱 Phone Camera');
+                this.updateInfo('📷 Camera stopped. Tap "Start Camera" to begin streaming again.');
+                this.hideError();
+            }
+            
+            updateStatus(type, text) {
+                this.elements.connectionStatus.textContent = text;
+                this.elements.connectionStatus.className = `status ${type}`;
+            }
+            
+            updateInfo(text) {
+                this.elements.infoPanel.innerHTML = text;
+                this.elements.infoPanel.classList.remove('hidden');
+            }
+            
+            showError(text) {
+                this.elements.errorPanel.textContent = text;
+                this.elements.errorPanel.classList.remove('hidden');
+            }
+            
+            hideError() {
+                this.elements.errorPanel.classList.add('hidden');
+            }
+
+            // Debug utilities (inside class)
+            logDebug(msg) {
+                const ts = new Date().toISOString().split('T')[1].split('Z')[0];
+                if (this.elements.debugLog) {
+                    this.elements.debugLog.style.display = 'block';
+                    this.elements.debugLog.innerHTML = (ts + ' ' + msg + '<br>') + this.elements.debugLog.innerHTML;
+                }
+                console.log('[PHONE]', msg);
+            }
+
+            toggleDebug() {
+                const el = this.elements.debugLog;
+                if (!el) return;
+                el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+            }
+        }
+        
+        // Initialize app when DOM is ready
+        document.addEventListener('DOMContentLoaded', () => {
+            window.phoneApp = new PhoneApp();
+        });
+    </script>
+</body>
+</html>

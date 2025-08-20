@@ -4,6 +4,7 @@ import logging
 import time
 import uuid
 from typing import Dict, List, Optional
+import os
 import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -33,15 +34,21 @@ class DetectionServer:
     def __init__(self):
         self.session = None
         self.model_loaded = False
-        self.input_shape = (320, 240)  # Width, Height for low-resource mode
+        # Defaults (will be overridden after inspecting model input)
+        self.model_width = 640
+        self.model_height = 640
+        self.input_layout = 'NCHW'  # or 'NHWC'
         self.confidence_threshold = 0.5
         self.nms_threshold = 0.4
         self.classes = self._get_coco_classes()
-        
         # Performance tracking
         self.frame_count = 0
         self.processing_times = []
-        
+        # Coordinate transform tracking (for letterbox preprocessing)
+        self.last_scale = 1.0
+        self.last_dw = 0
+        self.last_dh = 0
+
     async def initialize(self):
         """Initialize the ONNX Runtime session"""
         if not ONNX_AVAILABLE:
@@ -60,12 +67,54 @@ class DetectionServer:
                 providers.insert(0, 'CUDAExecutionProvider')
                 logger.info("CUDA provider available")
             
-            model_path = "/app/models/yolov5n.onnx"
+            # Use YOLOv4 model to match frontend expectations
+            # YOLOv4 converted TF -> ONNX typically has input name like 'input_1:0' and shape [batch,416,416,3] (NHWC)
+            # YOLOv5 models usually have shape [1,3,640,640] (NCHW) or dynamic dims.
+            model_path = os.getenv('MODEL_PATH', "/app/models/yolov4.onnx")
+            if not os.path.exists(model_path):
+                # Fallback to yolov4 if present
+                alt = "/app/models/yolov4.onnx"
+                if os.path.exists(alt):
+                    logger.warning(f"Primary model {model_path} missing, falling back to {alt}")
+                    model_path = alt
+                else:
+                    logger.error(f"Model path {model_path} not found and no fallback available")
             self.session = ort.InferenceSession(
                 model_path,
                 providers=providers
             )
             
+            # Inspect input metadata to configure preprocessing dynamically
+            try:
+                inp = self.session.get_inputs()[0]
+                shape = list(inp.shape)
+                # Remove batch dim if present
+                if len(shape) == 4:
+                    # Detect layout
+                    if shape[1] == 3 and shape[2] > 0 and shape[3] > 0:
+                        # NCHW
+                        self.input_layout = 'NCHW'
+                        self.model_height = int(shape[2]) if shape[2] > 0 else 640
+                        self.model_width = int(shape[3]) if shape[3] > 0 else self.model_height
+                    elif shape[3] == 3 and shape[1] > 0 and shape[2] > 0:
+                        # NHWC
+                        self.input_layout = 'NHWC'
+                        self.model_height = int(shape[1]) if shape[1] > 0 else 416
+                        self.model_width = int(shape[2]) if shape[2] > 0 else self.model_height
+                    else:
+                        # Fallback: assume square
+                        self.model_height = self.model_width = 640
+                        self.input_layout = 'NCHW'
+                else:
+                    # Unexpected rank; fallback
+                    self.model_height = self.model_width = 640
+                    self.input_layout = 'NCHW'
+                logger.info(f"Configured model input layout={self.input_layout} size={self.model_width}x{self.model_height}")
+            except Exception as meta_err:
+                logger.warning(f"Failed to parse input metadata, using defaults: {meta_err}")
+                self.model_height = self.model_width = 640
+                self.input_layout = 'NCHW'
+
             self.model_loaded = True
             logger.info(f"Model loaded successfully with providers: {self.session.get_providers()}")
             
@@ -75,31 +124,70 @@ class DetectionServer:
             self.model_loaded = False
     
     def preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Preprocess video frame for inference"""
-        # Resize to target dimensions
-        resized = cv2.resize(frame, self.input_shape)
-        
-        # Convert BGR to RGB
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        
-        # Normalize to [0, 1] and convert to float32
-        normalized = rgb.astype(np.float32) / 255.0
-        
-        # Convert to NCHW format (batch, channels, height, width)
-        transposed = np.transpose(normalized, (2, 0, 1))
-        
-        # Add batch dimension
-        batched = np.expand_dims(transposed, axis=0)
-        
-        return batched
+        """Preprocess video frame according to detected model layout with proper YOLOv4 letterboxing"""
+        if self.input_layout == 'NHWC' and self.model_width == 416:
+            # YOLOv4 preprocessing with letterboxing (from instructions)
+            h, w = frame.shape[:2]
+            target_h, target_w = self.model_height, self.model_width
+            
+            # Calculate scale factor
+            scale = min(target_w/w, target_h/h)
+            nw, nh = int(scale * w), int(scale * h)
+            
+            # Resize image
+            resized = cv2.resize(frame, (nw, nh))
+            
+            # Create padded image with gray background (128)
+            padded = np.full(shape=[target_h, target_w, 3], fill_value=128.0, dtype=np.uint8)
+            dw, dh = (target_w - nw) // 2, (target_h - nh) // 2
+            padded[dh:nh+dh, dw:nw+dw, :] = resized
+            
+            # BGR -> RGB and normalize
+            rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
+            img = rgb.astype(np.float32) / 255.0
+            
+            # Add batch dimension (keep NHWC format)
+            img = np.expand_dims(img, axis=0)
+            
+            # Store transform info for coordinate conversion
+            self.last_scale = scale
+            self.last_dw = dw
+            self.last_dh = dh
+            
+        else:
+            # Generic preprocessing for other models (NCHW)
+            resized = cv2.resize(frame, (self.model_width, self.model_height))
+            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            img = rgb.astype(np.float32) / 255.0
+            if self.input_layout == 'NCHW':
+                img = np.transpose(img, (2, 0, 1))  # HWC -> CHW
+            img = np.expand_dims(img, axis=0)
+            
+            # For stretch resize, store simple scale factors
+            self.last_scale = min(self.model_width/frame.shape[1], self.model_height/frame.shape[0])
+            self.last_dw = 0
+            self.last_dh = 0
+            
+        return img
     
     def postprocess_output(self, output: np.ndarray, orig_width: int, orig_height: int) -> List[Dict]:
-        """Process YOLO output and return detections"""
+        """Process YOLO output and return detections with proper coordinate conversion"""
         detections = []
         
-        # YOLO output format: [batch, num_detections, 85]
-        # 85 = 4 (bbox) + 1 (objectness) + 80 (classes)
-        for detection in output[0]:
+        # Check if this looks like YOLOv4 multi-scale output (3 tensors)
+        if isinstance(output, list) and len(output) == 3:
+            # YOLOv4 multi-scale processing would go here
+            # For now, use the first output tensor
+            output = output[0]
+        
+        # Handle single output tensor (standard YOLO format)
+        # Output format: [batch, num_detections, 85] where 85 = 4 (bbox) + 1 (objectness) + 80 (classes)
+        if len(output.shape) == 3:
+            batch_detections = output[0]  # Remove batch dimension
+        else:
+            batch_detections = output
+            
+        for detection in batch_detections:
             # Extract confidence scores
             scores = detection[5:]
             class_id = np.argmax(scores)
@@ -108,21 +196,45 @@ class DetectionServer:
             if confidence < self.confidence_threshold:
                 continue
             
-            # Extract and convert bounding box coordinates
+            # Extract bounding box coordinates (center format)
             x_center, y_center, width, height = detection[:4]
             
-            # Convert from model coordinates to normalized coordinates
-            x_center /= self.input_shape[0]  # Normalize by model width
-            y_center /= self.input_shape[1]  # Normalize by model height
-            width /= self.input_shape[0]
-            height /= self.input_shape[1]
+            # Convert center format to corner format in model coordinates
+            x1 = x_center - width / 2
+            y1 = y_center - height / 2
+            x2 = x_center + width / 2
+            y2 = y_center + height / 2
             
-            # Convert center format to corner format
-            xmin = max(0, x_center - width / 2)
-            ymin = max(0, y_center - height / 2)
-            xmax = min(1, x_center + width / 2)
-            ymax = min(1, y_center + height / 2)
+            # Convert from model coordinates to original image coordinates
+            if hasattr(self, 'last_scale') and hasattr(self, 'last_dw') and hasattr(self, 'last_dh'):
+                # Remove padding offset
+                x1 = (x1 - self.last_dw) / self.last_scale
+                y1 = (y1 - self.last_dh) / self.last_scale
+                x2 = (x2 - self.last_dw) / self.last_scale
+                y2 = (y2 - self.last_dh) / self.last_scale
+                
+                # Clip to original image bounds
+                x1 = max(0, min(orig_width - 1, x1))
+                y1 = max(0, min(orig_height - 1, y1))
+                x2 = max(0, min(orig_width - 1, x2))
+                y2 = max(0, min(orig_height - 1, y2))
+                
+                # Convert to normalized coordinates [0,1]
+                xmin = x1 / orig_width
+                ymin = y1 / orig_height
+                xmax = x2 / orig_width
+                ymax = y2 / orig_height
+            else:
+                # Fallback: assume direct normalization
+                xmin = max(0, x1 / self.model_width)
+                ymin = max(0, y1 / self.model_height)
+                xmax = min(1, x2 / self.model_width)
+                ymax = min(1, y2 / self.model_height)
             
+            # Skip invalid boxes
+            if xmax <= xmin or ymax <= ymin:
+                continue
+                
             detections.append({
                 'label': self.classes[class_id],
                 'score': float(confidence),

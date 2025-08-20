@@ -127,9 +127,9 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // API routes
 app.get('/api/connection-info', async (req, res) => {
-  // Use host header if available (supports remote / LAN access behind different hostname)
-  const hostHeader = req.headers.host || `${localIP}:${PORT}`;
-  const baseUrl = `http://${hostHeader}`;
+  // Force use of actual network IP address for mobile access
+  const networkIP = '192.168.0.11'; // Current network IP from ipconfig
+  const baseUrl = `http://${networkIP}:${PORT}`;
   const phoneUrl = `${baseUrl}/phone`;
   const phoneParamUrl = `${baseUrl}/?mobile=true`; // fallback style
 
@@ -140,7 +140,7 @@ app.get('/api/connection-info', async (req, res) => {
       phoneUrl,              // explicit phone page URL
       phoneParamUrl,         // alternative param-based URL
       qrCode,                // QR encodes phoneUrl
-      localIP: localIP,
+      localIP: networkIP,    // Use actual network IP
       port: PORT
     });
   } catch (error) {

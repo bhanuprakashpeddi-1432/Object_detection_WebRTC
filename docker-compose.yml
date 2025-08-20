@@ -30,6 +30,8 @@ services:
     environment:
       - MODE=${MODE:-server}
       - GPU_ENABLED=${GPU_ENABLED:-false}
+      # Use YOLOv4 model instead of YOLOv5n to match frontend
+      - MODEL_PATH=${MODEL_PATH:-/app/models/yolov4.onnx}
     volumes:
       - ./models:/app/models
     networks:

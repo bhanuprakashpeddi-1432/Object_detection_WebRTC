@@ -4,15 +4,33 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Install system dependencies and tools for ONNX Runtime
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     pkg-config \
     libopencv-dev \
+    libstdc++6 \
+    libgomp1 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+# Runtime environment tuning
+ENV OMP_NUM_THREADS=1
 
 # Copy requirements and install Python dependencies
 COPY server/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && python -c "import onnxruntime as ort, sys; print('ONNX Runtime version:', ort.__version__)"
+
+# Clear executable stack flag on onnxruntime shared object if set (some hardened kernels block it)
+# Use patchelf (available in Debian repos) then remove it to keep image small.
+RUN apt-get update && apt-get install -y --no-install-recommends patchelf file \
+    && ONNX_SO=$(python -c "import site,glob,os; paths=[]; [paths.extend(glob.glob(os.path.join(sp,'onnxruntime','capi','onnxruntime_pybind11_state*.so'))) for sp in site.getsitepackages()]; print(paths[0] if paths else '')") \
+    && echo "Target ONNX library: $ONNX_SO" \
+    && if [ -n "$ONNX_SO" ]; then echo 'Before:'; file "$ONNX_SO"; fi \
+    && if [ -n "$ONNX_SO" ]; then patchelf --clear-execstack "$ONNX_SO" || true; fi \
+    && if [ -n "$ONNX_SO" ]; then echo 'After:'; file "$ONNX_SO"; fi \
+    && apt-get purge -y --auto-remove patchelf file \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy server code
 COPY server/ .

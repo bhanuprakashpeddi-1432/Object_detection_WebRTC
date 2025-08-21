@@ -127,8 +127,8 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // API routes
 app.get('/api/connection-info', async (req, res) => {
-  // Force use of actual network IP address for mobile access
-  const networkIP = '192.168.0.11'; // Current network IP from ipconfig
+  // Use environment variable for host IP or fall back to dynamic detection
+  const networkIP = process.env.HOST_IP || getLocalIP();
   const baseUrl = `http://${networkIP}:${PORT}`;
   const phoneUrl = `${baseUrl}/phone`;
   const phoneParamUrl = `${baseUrl}/?mobile=true`; // fallback style
